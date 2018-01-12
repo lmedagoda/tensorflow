@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/framework/fake_input.h"
 
 #include <vector>
+#include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/op_def_util.h"
@@ -172,7 +173,7 @@ void FakeInputImpl::NSources(int n, DataType dt) const {
   for (int i = 0; i < n; ++i) {
     srcs.emplace_back(in_node_, i, dt);
   }
-  builder_->Input(srcs);
+  builder_->Input(gtl::ArraySlice<NodeDefBuilder::NodeOut>(srcs));
 }
 
 void FakeInputImpl::SourceList(DataTypeSlice dts) const {
@@ -181,7 +182,7 @@ void FakeInputImpl::SourceList(DataTypeSlice dts) const {
   for (size_t i = 0; i < dts.size(); ++i) {
     srcs.emplace_back(in_node_, i, dts[i]);
   }
-  builder_->Input(srcs);
+  builder_->Input(gtl::ArraySlice<NodeDefBuilder::NodeOut>(srcs));
 }
 
 }  // namespace

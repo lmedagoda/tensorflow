@@ -13,17 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/cc/client/client_session.h"
+#include "tensorflow/cc/framework/testutil.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/cc/ops/test_op.h"
+#include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
-#include "tensorflow/core/graph/default_device.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/public/session.h"
 
 namespace tensorflow {
-using namespace ops;  // NOLINT(build/namespaces)
-
+namespace ops {
 namespace {
 
 Output Linear(const Scope& scope, Input x, Input w, Input b) {
@@ -32,46 +31,12 @@ Output Linear(const Scope& scope, Input x, Input w, Input b) {
   return BiasAdd(cop_scopes.last, m, b);
 }
 
-void GetTensors(const Scope& scope, OutputList tensors,
-                std::vector<Tensor>* out) {
-  SessionOptions options;
-  std::unique_ptr<Session> session(NewSession(options));
-  GraphDef def;
-  scope.graph()->ToGraphDef(&def);
-
-  graph::SetDefaultDevice("/cpu:0", &def);
-
-  TF_CHECK_OK(session->Create(def));
-  std::vector<string> names;
-  for (const auto& t : tensors) {
-    names.push_back(strings::StrCat(t.node()->name(), ":", t.index()));
-  }
-  TF_CHECK_OK(session->Run({}, names, {}, out));
-  TF_CHECK_OK(session->Close());
-}
-
-void GetTensor(const Scope& scope, Output tensor, Tensor* out) {
-  std::vector<Tensor> outputs;
-  GetTensors(scope, {tensor}, &outputs);
-  *out = outputs[0];
-}
-
-void GetColocationConstraints(Output tensor, std::vector<string>* constraints) {
+void GetColocationConstraints(const Output& tensor,
+                              std::vector<string>* constraints) {
   constraints->clear();
-  const auto& attrs = tensor.op().node()->def().attr();
-  ASSERT_TRUE(attrs.find("_class") != attrs.end());
-  auto loc = attrs.find("_class")->second;
-  TF_EXPECT_OK(AttrValueHasType(loc, "list(string)"));
-  if (loc.value_case() == AttrValue::kList && loc.list().s_size() > 0) {
-    for (int i = 0; i < loc.list().s_size(); ++i) {
-      if (loc.list().s(i).find("loc:@") == 0) {
-        constraints->push_back(loc.list().s(i));
-      }
-    }
-  }
+  TF_EXPECT_OK(GetNodeAttr(tensor.op().node()->attrs(), kColocationAttrName,
+                           constraints));
 }
-
-}  // namespace
 
 TEST(CCOpTest, Basic) {
   Scope root = Scope::NewRootScope();
@@ -85,7 +50,7 @@ TEST(CCOpTest, Basic) {
   MatMul m(root, c, {{41}, {1}});
   TF_EXPECT_OK(root.status());
   Tensor out;
-  GetTensor(root, m, &out);
+  test::GetTensor(root, m, &out);
   test::ExpectTensorEqual<int>(out, test::AsTensor<int>({42}, {1, 1}));
 }
 
@@ -94,17 +59,17 @@ TEST(CCOpTest, Attrs) {
   auto m = MatMul(root, {{1}, {1}}, {{41}, {1}}, MatMul::TransposeA(true));
   TF_EXPECT_OK(root.status());
   Tensor out;
-  GetTensor(root, m, &out);
+  test::GetTensor(root, m, &out);
   test::ExpectTensorEqual<int>(out, test::AsTensor<int>({42}, {1, 1}));
 }
 
 TEST(CCOpTest, SplitConcat) {
   Scope root = Scope::NewRootScope();
   Split p(root, 0, {{1}, {2}}, 2);
-  auto c = Concat(root, 0, {p[0], p[1]});
+  auto c = Concat(root, {p[0], p[1]}, 0);
   TF_EXPECT_OK(root.status());
   Tensor out;
-  GetTensor(root, c, &out);
+  test::GetTensor(root, c, &out);
   test::ExpectTensorEqual<int>(out, test::AsTensor<int>({1, 2}, {2, 1}));
 }
 
@@ -115,7 +80,7 @@ TEST(CCOpTest, CompositeOp) {
   TF_EXPECT_OK(root.status());
   EXPECT_EQ(l.node()->name(), "layer0");
   Tensor out;
-  GetTensor(root, l, &out);
+  test::GetTensor(root, l, &out);
   test::ExpectClose(out, test::AsTensor<float>({-0.3, 34.2}, {1, 2}));
 }
 
@@ -123,7 +88,7 @@ TEST(CCOpTest, MultiOutput) {
   Scope root = Scope::NewRootScope();
   auto u = Unique(root, {1, 2, 2, 4, 3, 2});
   std::vector<Tensor> outputs;
-  GetTensors(root, {u.y, u.idx}, &outputs);
+  test::GetTensors(root, {u.y, u.idx}, &outputs);
   test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 2, 4, 3}));
   test::ExpectTensorEqual<int>(outputs[1],
                                test::AsTensor<int>({0, 1, 1, 2, 3, 1}));
@@ -146,7 +111,7 @@ TEST(CCOpTest, ExampleTrainer) {
   // y_normalized = y ./ y_norm
   auto y_normalized = Div(root.WithOpName("y_normalized"), y, y_norm);
   Tensor out;
-  GetTensor(root, y_normalized, &out);
+  test::GetTensor(root, y_normalized, &out);
   test::ExpectTensorNear<float>(
       out, test::AsTensor<float>({0.98058069, -0.19611613}, {2, 1}), 1e-5);
 }
@@ -173,7 +138,7 @@ TEST(CCOpTest, ControlDeps) {
 
   std::vector<Tensor> out;
 
-  GetTensors(root, {add}, &out);
+  test::GetTensors(root, {add}, &out);
   test::ExpectTensorNear<float>(out[0], test::AsTensor<float>({42.0f}, {}),
                                 1e-5);
 
@@ -181,7 +146,7 @@ TEST(CCOpTest, ControlDeps) {
   // Note : GetTensors creates a new session, so 'v' is uninitialized.
   // sub should have no control deps, so it should not cause the assign to run.
   // Hence is_inited should be false.
-  GetTensors(root, {sub, is_inited}, &out);
+  test::GetTensors(root, {sub, is_inited}, &out);
   test::ExpectTensorNear<float>(out[0], test::AsTensor<float>({1.0f}, {}),
                                 1e-5);
   test::ExpectTensorEqual<bool>(out[1], test::AsTensor<bool>({false}, {}));
@@ -191,11 +156,11 @@ TEST(CCOpTest, KernelLabel) {
   Scope root = Scope::NewRootScope();
   auto add = Add(root.WithKernelLabel("AddWithKernelLabel"), 1.0f, 2.0f);
   TF_EXPECT_OK(root.status());
-  const auto& attrs = add.z.op().node()->def().attr();
-  ASSERT_TRUE(attrs.find("_kernel") != attrs.end());
-  auto kernel_attr = attrs.find("_kernel")->second;
-  TF_EXPECT_OK(AttrValueHasType(kernel_attr, "string"));
-  EXPECT_EQ(kernel_attr.s(), "AddWithKernelLabel");
+  AttrSlice attrs = add.z.op().node()->attrs();
+  const auto* kernel_attr = attrs.Find("_kernel");
+  ASSERT_TRUE(kernel_attr);
+  TF_EXPECT_OK(AttrValueHasType(*kernel_attr, "string"));
+  EXPECT_EQ(kernel_attr->s(), "AddWithKernelLabel");
 }
 
 TEST(CCOpTest, ColocateWith) {
@@ -222,8 +187,7 @@ TEST(CCOpTest, ColocateWith) {
 
   Scope with_colocate = root.ColocateWith(c3).ColocateWith(c4);
   auto c6 = Const(with_colocate.WithOpName("c6").ClearColocation(), 7);
-  const auto& attrs = c6.op().node()->def().attr();
-  EXPECT_TRUE(attrs.find("_class") == attrs.end());
+  EXPECT_FALSE(c6.op().node()->attrs().Find("_class"));
 }
 
 TEST(CCOpTest, TemplatedConst) {
@@ -232,12 +196,12 @@ TEST(CCOpTest, TemplatedConst) {
   TF_EXPECT_OK(root.status());
 
   Tensor out;
-  GetTensor(root, c1, &out);
+  test::GetTensor(root, c1, &out);
   test::ExpectTensorEqual<float>(
       out, test::AsTensor<float>({3.f, 2.f, -1.f, 0.f}, {2, 2}));
 
   auto c2 = ops::Const<string>(root, {{"this"}, {"is"}, {"a"}, {"constant"}});
-  GetTensor(root, c2, &out);
+  test::GetTensor(root, c2, &out);
   test::ExpectTensorEqual<string>(
       out, test::AsTensor<string>({"this", "is", "a", "constant"}, {4, 1}));
 }
@@ -249,26 +213,39 @@ TEST(CCOpTest, EmptyConst) {
   TF_CHECK_OK(root.status());
 
   Tensor out;
-  GetTensor(root, c1, &out);
+  test::GetTensor(root, c1, &out);
   test::ExpectTensorEqual<float>(out, Tensor(DT_FLOAT, {0}));
 
   auto c2 = ops::Const(root, {{}});
   TF_CHECK_OK(root.status());
-  GetTensor(root, c2, &out);
+  test::GetTensor(root, c2, &out);
   test::ExpectTensorEqual<float>(out, Tensor(DT_FLOAT, {1, 0}));
 
   auto c3 = ops::Const(root, {{{}, {}}});
   TF_CHECK_OK(root.status());
-  GetTensor(root, c3, &out);
+  test::GetTensor(root, c3, &out);
   test::ExpectTensorEqual<float>(out, Tensor(DT_FLOAT, {1, 2, 0}));
 
   auto c4 = ops::Const<int>(root, {{{}}});
   TF_CHECK_OK(root.status());
-  GetTensor(root, c4, &out);
+  test::GetTensor(root, c4, &out);
   test::ExpectTensorEqual<int>(out, Tensor(DT_INT32, {1, 1, 0}));
 
   ops::Const(root, {{}, {{}}});
   EXPECT_FALSE(root.status().ok());
 }
 
+TEST(CCOpTest, InvalidFinalize) {
+  Scope root = Scope::NewRootScope();
+  auto read_up_to =
+      ops::ReaderReadUpTo(root, Variable(root, {}, DT_STRING),
+                          Variable(root, {}, DT_STRING), static_cast<int32>(2));
+  EXPECT_FALSE(root.status().ok());
+  auto err_msg = root.status().error_message();
+  EXPECT_NE(err_msg.find("'num_records' passed int32 expected int64"),
+            string::npos);
+}
+
+}  // namespace
+}  // namespace ops
 }  // namespace tensorflow

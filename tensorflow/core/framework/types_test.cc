@@ -25,6 +25,7 @@ namespace {
 TEST(TypesTest, DeviceTypeName) {
   EXPECT_EQ("CPU", DeviceTypeString(DeviceType(DEVICE_CPU)));
   EXPECT_EQ("GPU", DeviceTypeString(DeviceType(DEVICE_GPU)));
+  EXPECT_EQ("SYCL", DeviceTypeString(DeviceType(DEVICE_SYCL)));
 }
 
 TEST(TypesTest, kDataTypeRefOffset) {
@@ -127,6 +128,13 @@ TEST(TypesTest, QuantizedTypes) {
   EXPECT_FALSE(DataTypeIsQuantized(DT_INT16));
   EXPECT_FALSE(DataTypeIsQuantized(DT_INT32));
   EXPECT_FALSE(DataTypeIsQuantized(DT_BFLOAT16));
+}
+
+TEST(TypesTest, ComplexTypes) {
+  EXPECT_TRUE(DataTypeIsComplex(DT_COMPLEX64));
+  EXPECT_TRUE(DataTypeIsComplex(DT_COMPLEX128));
+  EXPECT_FALSE(DataTypeIsComplex(DT_FLOAT));
+  EXPECT_FALSE(DataTypeIsComplex(DT_DOUBLE));
 }
 
 TEST(TypesTest, IntegerTypes) {

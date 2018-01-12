@@ -19,9 +19,11 @@ limitations under the License.
 #include <deque>
 #include <vector>
 
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/batch_util.h"
 #include "tensorflow/core/kernels/fifo_queue.h"
 #include "tensorflow/core/kernels/queue_base.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -60,7 +62,7 @@ void FIFOQueue::TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
           [tuple, this](Attempt* attempt) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
             if (closed_) {
               attempt->context->SetStatus(
-                  errors::Aborted("FIFOQueue '", name_, "' is closed."));
+                  errors::Cancelled("FIFOQueue '", name_, "' is closed."));
               return kComplete;
             }
             if (queues_[0].size() < static_cast<size_t>(capacity_)) {
@@ -93,7 +95,7 @@ Status FIFOQueue::GetElementComponentFromBatch(const FIFOQueue::Tuple& tuple,
   TF_RETURN_IF_ERROR(ctx->allocate_persistent(
       tuple[component].dtype(), element_shape, out_tensor, &element_access));
   TF_RETURN_IF_ERROR(
-      CopySliceToElement(tuple[component], element_access, index));
+      batch_util::CopySliceToElement(tuple[component], element_access, index));
   return Status::OK();
 }
 
@@ -118,7 +120,7 @@ void FIFOQueue::TryEnqueueMany(const Tuple& tuple, OpKernelContext* ctx,
           [tuple, this](Attempt* attempt) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
             if (closed_) {
               attempt->context->SetStatus(
-                  errors::Aborted("FIFOQueue '", name_, "' is closed."));
+                  errors::Cancelled("FIFOQueue '", name_, "' is closed."));
               return kComplete;
             }
             RunResult result = kNoProgress;
@@ -229,7 +231,13 @@ void FIFOQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
       // an optimized case where the queue 'knows' what attributes to
       // use, and plumbs them through here.
       Tensor element;
-      ctx->allocate_temp(component_dtypes_[i], ManyOutShape(i, 0), &element);
+      Status status = ctx->allocate_temp(component_dtypes_[i],
+                                         ManyOutShape(i, 0), &element);
+      if (!status.ok()) {
+        ctx->SetStatus(status);
+        callback(Tuple());
+        return;
+      }
       tuple.emplace_back(element);
     }
     callback(tuple);
@@ -275,7 +283,7 @@ void FIFOQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
                       }
                     }
                   }
-                  if (allow_small_batch && queues_[0].size() > 0) {
+                  if (allow_small_batch && !queues_[0].empty()) {
                     // Request all remaining elements in the queue.
                     queue_size = queues_[0].size();
                     attempt->tuple.clear();
@@ -309,8 +317,10 @@ void FIFOQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
                       const TensorShape shape =
                           ManyOutShape(i, attempt->elements_requested);
                       Tensor element;
-                      attempt->context->allocate_temp(component_dtypes_[i],
-                                                      shape, &element);
+                      attempt->context->SetStatus(
+                          attempt->context->allocate_temp(component_dtypes_[i],
+                                                          shape, &element));
+                      if (!attempt->context->status().ok()) return kComplete;
                       attempt->tuple.emplace_back(element);
                     }
                   }
@@ -320,8 +330,8 @@ void FIFOQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
                   const int64 index = attempt->tuple[0].dim_size(0) -
                                       attempt->elements_requested;
                   for (int i = 0; i < num_components(); ++i) {
-                    attempt->context->SetStatus(CopyElementToSlice(
-                        tuple[i], &attempt->tuple[i], index));
+                    attempt->context->SetStatus(batch_util::CopyElementToSlice(
+                        std::move(tuple[i]), &attempt->tuple[i], index));
                     if (!attempt->context->status().ok()) return kComplete;
                   }
                   tuple.clear();
@@ -347,7 +357,10 @@ void FIFOQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
 }
 
 Status FIFOQueue::MatchesNodeDef(const NodeDef& node_def) {
-  TF_RETURN_IF_ERROR(MatchesNodeDefOp(node_def, "FIFOQueue"));
+  if (!MatchesNodeDefOp(node_def, "FIFOQueue").ok() &&
+      !MatchesNodeDefOp(node_def, "FIFOQueueV2").ok()) {
+    return errors::InvalidArgument("Expected FIFOQueue, found ", node_def.op());
+  }
   TF_RETURN_IF_ERROR(MatchesNodeDefCapacity(node_def, capacity_));
   TF_RETURN_IF_ERROR(MatchesNodeDefTypes(node_def));
   TF_RETURN_IF_ERROR(MatchesNodeDefShapes(node_def));

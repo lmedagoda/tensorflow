@@ -26,8 +26,8 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import gen_nn_ops
 from tensorflow.python.ops import math_ops
-from tensorflow.python.ops import nn_ops
 
 
 def clip_by_value(t, clip_value_min, clip_value_max,
@@ -41,12 +41,18 @@ def clip_by_value(t, clip_value_min, clip_value_max,
 
   Args:
     t: A `Tensor`.
-    clip_value_min: A 0-D (scalar) `Tensor`. The minimum value to clip by.
-    clip_value_max: A 0-D (scalar) `Tensor`. The maximum value to clip by.
+    clip_value_min: A 0-D (scalar) `Tensor`, or a `Tensor` with the same shape
+      as `t`. The minimum value to clip by.
+    clip_value_max: A 0-D (scalar) `Tensor`, or a `Tensor` with the same shape
+      as `t`. The maximum value to clip by.
     name: A name for the operation (optional).
 
   Returns:
     A clipped `Tensor`.
+
+  Raises:
+    ValueError: if the clip tensors would trigger array broadcasting
+      that would make the returned tensor larger than the input.
   """
   with ops.name_scope(name, "clip_by_value",
                       [t, clip_value_min, clip_value_max]) as name:
@@ -54,7 +60,12 @@ def clip_by_value(t, clip_value_min, clip_value_max,
 
     # Go through list of tensors, for each value in each tensor clip
     t_min = math_ops.minimum(t, clip_value_max)
+    # Assert that the shape is compatible with the initial shape,
+    # to prevent unintentional broadcasting.
+    _ = t.shape.merge_with(t_min.shape)
+
     t_max = math_ops.maximum(t_min, clip_value_min, name=name)
+    _ = t.shape.merge_with(t_max.shape)
 
   return t_max
 
@@ -96,11 +107,13 @@ def clip_by_norm(t, clip_norm, axes=None, name=None):
     t = ops.convert_to_tensor(t, name="t")
 
     # Calculate L2-norm, clip elements by ratio of clip_norm to L2-norm
-    l2norm_inv = math_ops.rsqrt(
-        math_ops.reduce_sum(t * t, axes, keep_dims=True))
-    tclip = array_ops.identity(t * clip_norm * math_ops.minimum(
-        l2norm_inv, constant_op.constant(1.0, dtype=t.dtype) / clip_norm),
-                               name=name)
+    l2norm = math_ops.sqrt(math_ops.reduce_sum(t * t, axes, keep_dims=True))
+    intermediate = t * clip_norm
+    # Assert that the shape is compatible with the initial shape,
+    # to prevent unintentional broadcasting.
+    _ = t.shape.merge_with(intermediate.shape)
+    tclip = array_ops.identity(
+        intermediate / math_ops.maximum(l2norm, clip_norm), name=name)
 
   return tclip
 
@@ -140,9 +153,9 @@ def global_norm(t_list, name=None):
     for v in values:
       if v is not None:
         with ops.colocate_with(v):
-          half_squared_norms.append(nn_ops.l2_loss(v))
+          half_squared_norms.append(gen_nn_ops.l2_loss(v))
 
-    half_squared_norm = math_ops.reduce_sum(array_ops.pack(half_squared_norms))
+    half_squared_norm = math_ops.reduce_sum(array_ops.stack(half_squared_norms))
 
     norm = math_ops.sqrt(
         half_squared_norm *
@@ -206,7 +219,7 @@ def clip_by_global_norm(t_list, clip_norm, use_norm=None, name=None):
     # Calculate L2-norm, clip elements by ratio of clip_norm to L2-norm
     scale = clip_norm * math_ops.minimum(
         1.0 / use_norm,
-        constant_op.constant(1.0 / clip_norm, dtype=use_norm.dtype))
+        constant_op.constant(1.0, dtype=use_norm.dtype) / clip_norm)
 
     values = [
         ops.convert_to_tensor(
@@ -268,7 +281,7 @@ def clip_by_average_norm(t, clip_norm, name=None):
         math_ops.reduce_sum(t * t, math_ops.range(array_ops.rank(t))))
     tclip = array_ops.identity(
         t * clip_norm * math_ops.minimum(
-            l2norm_inv * n_element, constant_op.constant(1.0 / clip_norm)),
+            l2norm_inv * n_element, constant_op.constant(1.0) / clip_norm),
         name=name)
 
   return tclip

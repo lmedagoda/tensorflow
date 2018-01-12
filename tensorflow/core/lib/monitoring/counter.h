@@ -20,7 +20,7 @@ limitations under the License.
 // platforms.
 #include "tensorflow/core/platform/platform.h"
 #ifdef IS_MOBILE_PLATFORM
-#include "tensorflow/core/lib/monitoring/mobile/counter.h"
+#include "tensorflow/core/lib/monitoring/mobile_counter.h"
 #else
 
 #include <array>
@@ -33,8 +33,6 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
-
-// WARNING: Not yet ready for usage.
 
 namespace tensorflow {
 namespace monitoring {
@@ -50,7 +48,7 @@ namespace monitoring {
 // This class is thread-safe.
 class CounterCell {
  public:
-  CounterCell(const int64 value) : value_(value) {}
+  CounterCell(int64 value) : value_(value) {}
   ~CounterCell() {}
 
   // Atomically increments the value by step.
@@ -157,7 +155,7 @@ CounterCell* Counter<NumLabels>::GetCell(const Labels&... labels)
                 "Mismatch between Counter<NumLabels> and number of labels "
                 "provided in GetCell(...).");
 
-  const LabelArray& label_array = {labels...};
+  const LabelArray& label_array = {{labels...}};
   mutex_lock l(mu_);
   const auto found_it = cells_.find(label_array);
   if (found_it != cells_.end()) {

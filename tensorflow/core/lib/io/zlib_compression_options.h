@@ -16,16 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_LIB_IO_ZLIB_COMPRESSION_OPTIONS_H_
 #define TENSORFLOW_LIB_IO_ZLIB_COMPRESSION_OPTIONS_H_
 
-// TODO(srbs|vrv): Move to a platform/zlib.h file to centralize all
-// platform-specific includes
-#ifdef __ANDROID__
-#include "zlib.h"
-#else
 #include <zlib.h>
-#endif  // __ANDROID__
+
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace io {
+
 class ZlibCompressionOptions {
  public:
   static ZlibCompressionOptions DEFAULT();
@@ -127,7 +124,8 @@ inline ZlibCompressionOptions ZlibCompressionOptions::GZIP() {
   options.window_bits = options.window_bits + 16;
   return options;
 }
-}
-}
+
+}  // namespace io
+}  // namespace tensorflow
 
 #endif  // TENSORFLOW_LIB_IO_ZLIB_COMPRESSION_OPTIONS_H_

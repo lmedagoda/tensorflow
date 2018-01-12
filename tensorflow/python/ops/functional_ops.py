@@ -15,10 +15,7 @@
 
 """Functional operations.
 
-## Higher Order Operators
-
-TensorFlow provides several higher order operators to simplify the common
-map-reduce programming patterns.
+See the @{$python/functional_ops} guide.
 
 @@map_fn
 @@foldl
@@ -30,8 +27,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
@@ -89,15 +88,20 @@ def foldl(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
   if not callable(fn):
     raise TypeError("fn must be callable.")
 
+  in_graph_mode = context.in_graph_mode()
   with ops.name_scope(name, "foldl", [elems]):
-    # Any get_variable calls in fn will cache the first call locally
-    # and not issue repeated network I/O requests for each iteration.
-    varscope = vs.get_variable_scope()
-    varscope_caching_device_was_none = False
-    if varscope.caching_device is None:
-      # TODO(ebrevdo): Change to using colocate_with here and in other methods.
-      varscope.set_caching_device(lambda op: op.device)
-      varscope_caching_device_was_none = True
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode:
+      # Any get_variable calls in fn will cache the first call locally
+      # and not issue repeated network I/O requests for each iteration.
+      varscope = vs.get_variable_scope()
+      varscope_caching_device_was_none = False
+      if varscope.caching_device is None:
+        # TODO(ebrevdo): Change to using colocate_with here and in other
+        # methods.
+        varscope.set_caching_device(lambda op: op.device)
+        varscope_caching_device_was_none = True
 
     # Convert elems to tensor array.
     elems = ops.convert_to_tensor(elems, name="elems")
@@ -105,7 +109,7 @@ def foldl(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
     elems_ta = tensor_array_ops.TensorArray(dtype=elems.dtype, size=n,
                                             dynamic_size=False,
                                             infer_shape=True)
-    elems_ta = elems_ta.unpack(elems)
+    elems_ta = elems_ta.unstack(elems)
 
     if initializer is None:
       a = elems_ta.read(0)
@@ -123,7 +127,9 @@ def foldl(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
         back_prop=back_prop,
         swap_memory=swap_memory)
 
-    if varscope_caching_device_was_none:
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode and varscope_caching_device_was_none:
       varscope.set_caching_device(None)
     return r_a
 
@@ -169,15 +175,20 @@ def foldr(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
   if not callable(fn):
     raise TypeError("fn must be callable.")
 
+  in_graph_mode = context.in_graph_mode()
   with ops.name_scope(name, "foldr", [elems]):
-    # Any get_variable calls in fn will cache the first call locally
-    # and not issue repeated network I/O requests for each iteration.
-    varscope = vs.get_variable_scope()
-    varscope_caching_device_was_none = False
-    if varscope.caching_device is None:
-      # TODO(ebrevdo): Change to using colocate_with here and in other methods.
-      varscope.set_caching_device(lambda op: op.device)
-      varscope_caching_device_was_none = True
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode:
+      # Any get_variable calls in fn will cache the first call locally and not
+      # issue repeated network I/O requests for each iteration.
+      varscope = vs.get_variable_scope()
+      varscope_caching_device_was_none = False
+      if varscope.caching_device is None:
+        # TODO(ebrevdo): Change to using colocate_with here and in other
+        # methods.
+        varscope.set_caching_device(lambda op: op.device)
+        varscope_caching_device_was_none = True
 
     # Convert elems to tensor array.
     elems = ops.convert_to_tensor(elems, name="elems")
@@ -185,7 +196,7 @@ def foldr(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
     elems_ta = tensor_array_ops.TensorArray(dtype=elems.dtype, size=n,
                                             dynamic_size=False,
                                             infer_shape=True)
-    elems_ta = elems_ta.unpack(elems)
+    elems_ta = elems_ta.unstack(elems)
 
     if initializer is None:
       i = n - 1
@@ -203,7 +214,9 @@ def foldr(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
         back_prop=back_prop,
         swap_memory=swap_memory)
 
-    if varscope_caching_device_was_none:
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode and varscope_caching_device_was_none:
       varscope.set_caching_device(None)
     return r_a
 
@@ -212,7 +225,7 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
            swap_memory=False, infer_shape=True, name=None):
   """map on the list of tensors unpacked from `elems` on dimension 0.
 
-  The simplest version of `map` repeatedly applies the callable `fn` to a
+  The simplest version of `map_fn` repeatedly applies the callable `fn` to a
   sequence of elements from first to last. The elements are made of the
   tensors unpacked from `elems`. `dtype` is the data type of the return
   value of `fn`. Users must provide `dtype` if it is different from
@@ -232,6 +245,23 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
   `fn` may look like: `fn = lambda t1: return (t1 + 1, t1 - 1)`.  In this case,
   the `dtype` parameter is not optional: `dtype` must be a type or (possibly
   nested) tuple of types matching the output of `fn`.
+
+  To apply a functional operation to the nonzero elements of a SparseTensor
+  one of the following methods is recommended. First, if the function is
+  expressible as TensorFlow ops, use
+
+  ```python
+    result = SparseTensor(input.indices, fn(input.values), input.dense_shape)
+  ```
+
+  If, however, the function is not expressible as a TensorFlow op, then use
+
+  ```python
+  result = SparseTensor(
+    input.indices, map_fn(fn, input.values), input.dense_shape)
+  ```
+
+  instead.
 
   Args:
     fn: The callable to be performed.  It accepts one argument, which will
@@ -258,7 +288,7 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
 
   Raises:
     TypeError: if `fn` is not callable or the structure of the output of
-      `fn` and `dtype` do not match.
+      `fn` and `dtype` do not match, or if elems is a SparseTensor.
     ValueError: if the lengths of the output of `fn` and `dtype` do not match.
 
   Examples:
@@ -284,6 +314,13 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
   if not callable(fn):
     raise TypeError("fn must be callable.")
 
+  if isinstance(elems, sparse_tensor.SparseTensor):
+    raise TypeError(
+        "To perform a map on the values of a sparse tensor use either "
+        " SparseTensor(input.indices, fn(input.values), input.dense_shape) or "
+        " SparseTensor(input.indices, map_fn(fn, input.values), "
+        "input.dense_shape)")
+
   input_is_sequence = nest.is_sequence(elems)
   input_flatten = lambda x: nest.flatten(x) if input_is_sequence else [x]
   def input_pack(x):
@@ -302,15 +339,20 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
 
   elems_flat = input_flatten(elems)
 
+  in_graph_mode = context.in_graph_mode()
   with ops.name_scope(name, "map", elems_flat):
-    # Any get_variable calls in fn will cache the first call locally
-    # and not issue repeated network I/O requests for each iteration.
-    varscope = vs.get_variable_scope()
-    varscope_caching_device_was_none = False
-    if varscope.caching_device is None:
-      # TODO(ebrevdo): Change to using colocate_with here and in other methods.
-      varscope.set_caching_device(lambda op: op.device)
-      varscope_caching_device_was_none = True
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode:
+      # Any get_variable calls in fn will cache the first call locally
+      # and not issue repeated network I/O requests for each iteration.
+      varscope = vs.get_variable_scope()
+      varscope_caching_device_was_none = False
+      if varscope.caching_device is None:
+        # TODO(ebrevdo): Change to using colocate_with here and in other
+        # methods.
+        varscope.set_caching_device(lambda op: op.device)
+        varscope_caching_device_was_none = True
 
     elems_flat = [
         ops.convert_to_tensor(elem, name="elem") for elem in elems_flat]
@@ -329,7 +371,7 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
         for elem in elems_flat]
     # Unpack elements
     elems_ta = [
-        elem_ta.unpack(elem) for elem_ta, elem in zip(elems_ta, elems_flat)]
+        elem_ta.unstack(elem) for elem_ta, elem in zip(elems_ta, elems_flat)]
 
     i = constant_op.constant(0)
 
@@ -365,7 +407,7 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
         parallel_iterations=parallel_iterations,
         back_prop=back_prop,
         swap_memory=swap_memory)
-    results_flat = [r.pack() for r in r_a]
+    results_flat = [r.stack() for r in r_a]
 
     n_static = elems_flat[0].get_shape().with_rank_at_least(1)[0]
     for elem in elems_flat[1:]:
@@ -374,7 +416,9 @@ def map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True,
       r.set_shape(tensor_shape.TensorShape(n_static).concatenate(
           r.get_shape()[1:]))
 
-    if varscope_caching_device_was_none:
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode and varscope_caching_device_was_none:
       varscope.set_caching_device(None)
 
     return output_pack(results_flat)
@@ -416,9 +460,9 @@ def scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
 
   Args:
     fn: The callable to be performed.  It accepts two arguments.  The first
-      will have the same (possibly nested) structure as `elems`.  The second
       will have the same structure as `initializer` if one is provided,
-      otherwise it will have the same structure as `elems`.  Its output
+      otherwise it will have the same structure as `elems`.  The second
+      will have the same (possibly nested) structure as `elems`.  Its output
       must have the same structure as `initializer` if one is provided,
       otherwise it must have the same structure as `elems`.
     elems: A tensor or (possibly nested) sequence of tensors, each of which
@@ -487,15 +531,20 @@ def scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
 
   elems_flat = input_flatten(elems)
 
+  in_graph_mode = context.in_graph_mode()
   with ops.name_scope(name, "scan", elems_flat):
-    # Any get_variable calls in fn will cache the first call locally
-    # and not issue repeated network I/O requests for each iteration.
-    varscope = vs.get_variable_scope()
-    varscope_caching_device_was_none = False
-    if varscope.caching_device is None:
-      # TODO(ebrevdo): Change to using colocate_with here and in other methods.
-      varscope.set_caching_device(lambda op: op.device)
-      varscope_caching_device_was_none = True
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode:
+      # Any get_variable calls in fn will cache the first call locally
+      # and not issue repeated network I/O requests for each iteration.
+      varscope = vs.get_variable_scope()
+      varscope_caching_device_was_none = False
+      if varscope.caching_device is None:
+        # TODO(ebrevdo): Change to using colocate_with here and in other
+        # methods.
+        varscope.set_caching_device(lambda op: op.device)
+        varscope_caching_device_was_none = True
 
     # Convert elems to tensor array.
     elems_flat = [
@@ -511,7 +560,7 @@ def scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
         for elem in elems_flat]
     # Unpack elements
     elems_ta = [
-        elem_ta.unpack(elem) for elem_ta, elem in zip(elems_ta, elems_flat)]
+        elem_ta.unstack(elem) for elem_ta, elem in zip(elems_ta, elems_flat)]
 
     if initializer is None:
       a_flat = [elem.read(0) for elem in elems_ta]
@@ -523,9 +572,11 @@ def scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
 
     # Create a tensor array to store the intermediate values.
     accs_ta = [
-        tensor_array_ops.TensorArray(dtype=init.dtype, size=n,
-                                     dynamic_size=False,
-                                     infer_shape=infer_shape)
+        tensor_array_ops.TensorArray(
+            dtype=init.dtype, size=n,
+            element_shape=init.shape if infer_shape else None,
+            dynamic_size=False,
+            infer_shape=infer_shape)
         for init in a_flat]
 
     if initializer is None:
@@ -561,7 +612,7 @@ def scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
         parallel_iterations=parallel_iterations,
         back_prop=back_prop, swap_memory=swap_memory)
 
-    results_flat = [r.pack() for r in r_a]
+    results_flat = [r.stack() for r in r_a]
 
     n_static = elems_flat[0].get_shape().with_rank_at_least(1)[0]
     for elem in elems_flat[1:]:
@@ -570,15 +621,9 @@ def scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True,
       r.set_shape(tensor_shape.TensorShape(n_static).concatenate(
           r.get_shape()[1:]))
 
-    if varscope_caching_device_was_none:
+    # TODO(akshayka): Remove the in_graph_mode check once caching devices are
+    # supported in Eager
+    if in_graph_mode and varscope_caching_device_was_none:
       varscope.set_caching_device(None)
 
     return output_pack(results_flat)
-
-
-@ops.RegisterShape("SymbolicGradient")
-def _symbolic_gradient_shape(op):
-  # Say, (u, v) = f(x, y, z), _symbolic_gradient(f) is a function of
-  # (x, y, z, du, dv) -> (dx, dy, dz). Therefore, shapes of its
-  # outputs (dx, dy, dz) are the same as (x, y, z).
-  return [op.inputs[i].get_shape() for i in range(len(op.outputs))]

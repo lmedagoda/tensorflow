@@ -23,9 +23,11 @@ limitations under the License.
 //
 // Full build instructions are at tensorflow/contrib/pi_examples/README.md.
 
-#include <fstream>
+#include <stdio.h>
 #include <jpeglib.h>
 #include <setjmp.h>
+#include <fstream>
+#include <vector>
 
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -87,7 +89,7 @@ Status LoadJpegFile(string file_name, std::vector<tensorflow::uint8>* data,
   FILE * infile;
   JSAMPARRAY buffer;
   int row_stride;
-  
+
   if ((infile = fopen(file_name.c_str(), "rb")) == NULL) {
     LOG(ERROR) << "Can't open " << file_name;
     return tensorflow::errors::NotFound("JPEG file ", file_name,
@@ -100,9 +102,10 @@ Status LoadJpegFile(string file_name, std::vector<tensorflow::uint8>* data,
   cinfo.client_data = &jpeg_jmpbuf;
   jerr.error_exit = CatchError;
   if (setjmp(jpeg_jmpbuf)) {
+    fclose(infile);
     return tensorflow::errors::Unknown("JPEG decoding failed");
   }
-  
+
   jpeg_create_decompress(&cinfo);
   jpeg_stdio_src(&cinfo, infile);
   jpeg_read_header(&cinfo, TRUE);
@@ -116,14 +119,14 @@ Status LoadJpegFile(string file_name, std::vector<tensorflow::uint8>* data,
   buffer = (*cinfo.mem->alloc_sarray)
     ((j_common_ptr) &cinfo, JPOOL_IMAGE, row_stride, 1);
   while (cinfo.output_scanline < cinfo.output_height) {
-    tensorflow::uint8* row_address = &((*data)[cinfo.output_scanline * row_stride]); 
+    tensorflow::uint8* row_address = &((*data)[cinfo.output_scanline * row_stride]);
     jpeg_read_scanlines(&cinfo, buffer, 1);
     memcpy(row_address, buffer[0], row_stride);
   }
 
   jpeg_finish_decompress(&cinfo);
   jpeg_destroy_decompress(&cinfo);
-  fclose(infile);  
+  fclose(infile);
   return Status::OK();
 }
 
@@ -164,7 +167,7 @@ Status ReadTensorFromImageFile(string file_name, const int wanted_height,
     const int top_y_index = static_cast<int>(floorf(in_y));
     const int bottom_y_index =
       std::min(static_cast<int>(ceilf(in_y)), (image_height - 1));
-    const float y_lerp = in_y - top_y_index; 
+    const float y_lerp = in_y - top_y_index;
     tensorflow::uint8* in_top_row = in + (top_y_index * image_rowlen);
     tensorflow::uint8* in_bottom_row = in + (bottom_y_index * image_rowlen);
     float *out_row = out + (y * wanted_width * wanted_channels);
@@ -183,7 +186,7 @@ Status ReadTensorFromImageFile(string file_name, const int wanted_height,
 	in_bottom_row + (right_x_index * wanted_channels);
       const float x_lerp = in_x - left_x_index;
       float *out_pixel = out_row + (x * wanted_channels);
-      for (int c = 0; c < wanted_channels; ++c) {	
+      for (int c = 0; c < wanted_channels; ++c) {
 	const float top_left((in_top_left_pixel[c] - input_mean) / input_std);
 	const float top_right((in_top_right_pixel[c] - input_mean) / input_std);
 	const float bottom_left((in_bottom_left_pixel[c] - input_mean) / input_std);
@@ -195,7 +198,7 @@ Status ReadTensorFromImageFile(string file_name, const int wanted_height,
       }
     }
   }
-  
+
   out_tensors->push_back(image_tensor);
   return Status::OK();
 }
@@ -297,7 +300,8 @@ int main(int argc, char* argv[]) {
   // They define where the graph and input data is located, and what kind of
   // input the model expects. If you train your own model, or use something
   // other than GoogLeNet you'll need to update these.
-  string image = "tensorflow/contrib/pi_examples/label_image/data/"
+  string image =
+      "tensorflow/contrib/pi_examples/label_image/data/"
       "grace_hopper.jpg";
   string graph =
       "tensorflow/contrib/pi_examples/label_image/data/"
@@ -313,27 +317,32 @@ int main(int argc, char* argv[]) {
   string output_layer = "softmax";
   bool self_test = false;
   string root_dir = "";
-  const bool parse_result = tensorflow::ParseFlags(
-      &argc, argv, {Flag("image", &image),                //
-                    Flag("graph", &graph),                //
-                    Flag("labels", &labels),              //
-                    Flag("input_width", &input_width),    //
-                    Flag("input_height", &input_height),  //
-                    Flag("input_mean", &input_mean),      //
-                    Flag("input_std", &input_std),        //
-                    Flag("input_layer", &input_layer),    //
-                    Flag("output_layer", &output_layer),  //
-                    Flag("self_test", &self_test),        //
-                    Flag("root_dir", &root_dir)});
+  std::vector<tensorflow::Flag> flag_list = {
+      Flag("image", &image, "image to be processed"),
+      Flag("graph", &graph, "graph to be executed"),
+      Flag("labels", &labels, "name of file containing labels"),
+      Flag("input_width", &input_width, "resize image to this width in pixels"),
+      Flag("input_height", &input_height,
+           "resize image to this height in pixels"),
+      Flag("input_mean", &input_mean, "scale pixel values to this mean"),
+      Flag("input_std", &input_std, "scale pixel values to this std deviation"),
+      Flag("input_layer", &input_layer, "name of input layer"),
+      Flag("output_layer", &output_layer, "name of output layer"),
+      Flag("self_test", &self_test, "run a self test"),
+      Flag("root_dir", &root_dir,
+           "interpret image and graph file names relative to this directory"),
+  };
+  string usage = tensorflow::Flags::Usage(argv[0], flag_list);
+  const bool parse_result = tensorflow::Flags::Parse(&argc, argv, flag_list);
   if (!parse_result) {
-    LOG(ERROR) << "Error parsing command-line flags.";
+    LOG(ERROR) << "\n" << usage;
     return -1;
   }
 
   // We need to call this to set up global state for TensorFlow.
-  tensorflow::port::InitMain(argv[0], &argc, &argv);
+  tensorflow::port::InitMain(usage.c_str(), &argc, &argv);
   if (argc > 1) {
-    LOG(ERROR) << "Unknown argument " << argv[1];
+    LOG(ERROR) << "Unknown argument " << argv[1] << "\n" << usage;
     return -1;
   }
 

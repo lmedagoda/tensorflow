@@ -143,7 +143,7 @@ Tensor FeatureSparseCopy(const std::size_t batch, const string& key,
       return out;
     }
     default:
-      CHECK(false) << "not supposed to be here.  dtype requested: " << dtype;
+      LOG(FATAL) << "not supposed to be here.  dtype requested: " << dtype;
   }
 }
 
@@ -180,7 +180,7 @@ int64 CopyIntoSparseTensor(const Tensor& in, const int batch,
       break;
     }
     default:
-      CHECK(false) << "Not supposed to be here.  Saw dtype: " << dtype;
+      LOG(FATAL) << "Not supposed to be here.  Saw dtype: " << dtype;
   }
 
   return num_elements;
@@ -208,7 +208,7 @@ void RowDenseCopy(const std::size_t& out_index, const DataType& dtype,
       break;
     }
     default:
-      CHECK(false) << "Not supposed to be here.  Saw dtype: " << dtype;
+      LOG(FATAL) << "Not supposed to be here.  Saw dtype: " << dtype;
   }
 }
 
@@ -222,7 +222,7 @@ Status SingleExampleProtoToTensors(
   const auto& feature_dict = features.feature();
 
   // Handle dense features.
-  for (int d = 0; d < fixed_len_features.size(); ++d) {
+  for (size_t d = 0; d < fixed_len_features.size(); ++d) {
     const FixedLenFeature& feature_config = fixed_len_features[d];
     const string& key = feature_config.key;
     const DataType& dtype = feature_config.dtype;
@@ -263,7 +263,7 @@ Status SingleExampleProtoToTensors(
   }
 
   // Handle sparse features.
-  for (int d = 0; d < var_len_features.size(); ++d) {
+  for (size_t d = 0; d < var_len_features.size(); ++d) {
     const VarLenFeature& feature_config = var_len_features[d];
     const string& key = feature_config.key;
     const DataType& dtype = feature_config.dtype;
@@ -323,7 +323,7 @@ Status BatchExampleProtoToTensors(
     std::vector<Tensor>* output_sparse_shapes_tensor) {
   const int batch_size = examples.size();
 
-  const bool has_names = (names.size() > 0);
+  const bool has_names = (!names.empty());
   if (has_names) {
     if (names.size() != examples.size()) {
       return errors::InvalidArgument(
@@ -338,7 +338,7 @@ Status BatchExampleProtoToTensors(
       fixed_len_features.size());
 
   // Preallocate dense_values, since we know their sizes.
-  for (int d = 0; d < fixed_len_features.size(); ++d) {
+  for (size_t d = 0; d < fixed_len_features.size(); ++d) {
     const FixedLenFeature& config = fixed_len_features[d];
     TensorShape out_shape;
     out_shape.AddDim(batch_size);
@@ -352,26 +352,27 @@ Status BatchExampleProtoToTensors(
   // Temporary vector to hold sparse values.
   std::vector<std::vector<Tensor>> sparse_values_tmp(var_len_features.size());
 
-  for (int d = 0; d < var_len_features.size(); ++d) {
+  for (size_t d = 0; d < var_len_features.size(); ++d) {
     sparse_values_tmp[d] = std::vector<Tensor>(batch_size);
   }
 
-  for (int b = 0; b < examples.size(); ++b) {
+  for (size_t b = 0; b < examples.size(); ++b) {
     const Example& ex = *(examples[b]);
     const string& example_name = (has_names) ? names[b] : "<unknown>";
-    SingleExampleProtoToTensors(
+    TF_RETURN_IF_ERROR(SingleExampleProtoToTensors(
         ex, example_name, b, fixed_len_features, var_len_features,
-        &output_dense_values_tensor_ptrs, &sparse_values_tmp);
+        &output_dense_values_tensor_ptrs, &sparse_values_tmp));
   }
 
-  for (int d = 0; d < var_len_features.size(); ++d) {
+  for (size_t d = 0; d < var_len_features.size(); ++d) {
     const VarLenFeature& feature_config = var_len_features[d];
     const DataType& dtype = feature_config.dtype;
     const std::vector<Tensor>& sparse_values_tensor = sparse_values_tmp[d];
 
     VarLenFeatureBatchShapes sparse_tensor_batch_shapes;
-    GetSparseTensorShapes(feature_config, sparse_values_tensor, batch_size,
-                          &sparse_tensor_batch_shapes);
+    TF_RETURN_IF_ERROR(GetSparseTensorShapes(feature_config,
+                                             sparse_values_tensor, batch_size,
+                                             &sparse_tensor_batch_shapes));
     const TensorShape& indices_shape = sparse_tensor_batch_shapes.indices_shape;
     const TensorShape& values_shape = sparse_tensor_batch_shapes.values_shape;
 
@@ -399,7 +400,7 @@ Status BatchExampleProtoToTensors(
   return Status::OK();
 }
 
-Status ParseSingleExampleAttrs::FinishInit() {
+Status ParseExampleAttrs::FinishInit() {
   if (static_cast<size_t>(num_sparse) != sparse_types.size()) {
     return errors::InvalidArgument("len(sparse_keys) != len(sparse_types)");
   }
@@ -411,6 +412,25 @@ Status ParseSingleExampleAttrs::FinishInit() {
   }
   if (num_dense > std::numeric_limits<int32>::max()) {
     return errors::InvalidArgument("num_dense_ too large");
+  }
+  for (const DataType& type : dense_types) {
+    TF_RETURN_IF_ERROR(CheckValidType(type));
+  }
+  for (const DataType& type : sparse_types) {
+    TF_RETURN_IF_ERROR(CheckValidType(type));
+  }
+  return Status::OK();
+}
+
+Status ParseSingleExampleAttrs::FinishInit() {
+  if (sparse_keys.size() != sparse_types.size()) {
+    return errors::InvalidArgument("len(sparse_keys) != len(sparse_types)");
+  }
+  if (dense_keys.size() != dense_types.size()) {
+    return errors::InvalidArgument("len(dense_keys) != len(dense_types)");
+  }
+  if (dense_keys.size() != dense_shapes.size()) {
+    return errors::InvalidArgument("len(dense_keys) != len(dense_shapes)");
   }
   for (const DataType& type : dense_types) {
     TF_RETURN_IF_ERROR(CheckValidType(type));
